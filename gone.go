@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -30,14 +31,17 @@ func (engine *GEngine) SetConfigPath(path string) {
 }
 
 // parseConfig 加载配置文件
-func (engine *GEngine) parseConfig() (*AppConfig, string) {
+func (engine *GEngine) parseConfig() *AppConfig {
 	config := newAppConfig()
 	err := config.ParseFile(engine.configPath)
 	if err == nil {
-		return config, fmt.Sprintf("Using config from file '%s'", engine.configPath)
+		setLogger(config)
+		LogInfof("Using config from file '%s'", engine.configPath)
+		return config
 	}
 	if err != nil && os.IsNotExist(err) {
-		return config, fmt.Sprintf("Config file '%s' not found, using default config.", engine.configPath)
+		LogWarnf("Config file '%s' not found, using default config.", engine.configPath)
+		return config
 	}
 	panic(fmt.Errorf("parse config from file '%s' error: %v", engine.configPath, err))
 }
@@ -65,11 +69,10 @@ func (engine *GEngine) start(addr string) error {
 
 // Run 项目运行
 func (engine *GEngine) Run() {
-	config, msg := engine.parseConfig()
-	setLogger(config)
+	banner()
+	config := engine.parseConfig()
 	// 生产环境或编译后的进程，运行项目
 	if config.Production || os.Getenv("GONE_RUNTIME") != "" {
-		LogInfo(msg)
 		if err := engine.start(fmt.Sprintf(":%d", config.Port)); err != nil {
 			panic(err)
 		}
@@ -82,10 +85,25 @@ func (engine *GEngine) Run() {
 		if err != nil {
 			LogWarn("Unable to get the project path. Your hot build may not work.")
 		} else {
-			if err := startWatch(dir, watcher); err != nil {
+			rebuildChan := make(chan int, 1)
+			buildChan := make(chan int, 1)
+			if err := startWatch(dir, watcher, rebuildChan, buildChan); err != nil {
 				LogWarn("Unable to start watcher. Your hot build may not work.")
 			}
-			time.Sleep(10 * time.Minute)
+			// 开始循环重构
+			var cmd *exec.Cmd
+			if build(dir) {
+				cmd = run(dir)
+				for {
+					clearTerminal()
+					<-rebuildChan
+					if build(dir) {
+						cmd.Process.Kill()
+						buildChan <- 1
+						cmd = run(dir)
+					}
+				}
+			}
 		}
 	}
 }
@@ -110,7 +128,7 @@ func setLogger(config *AppConfig) {
 }
 
 // startWatch 开始文件监测
-func startWatch(basePath string, watcher *Watcher) error {
+func startWatch(basePath string, watcher *Watcher, rebuildChan chan int, buildChan chan int) error {
 	dirs := []string{basePath}
 	getDirs(basePath, &dirs)
 	for _, dir := range dirs {
@@ -120,8 +138,7 @@ func startWatch(basePath string, watcher *Watcher) error {
 		logWatchf("%s add to watcher successfully.", dir)
 	}
 	go watcher.Watch()
-	go watcherEventsHandler(watcher)
-	build()
+	go watcherEventsHandler(watcher, rebuildChan, buildChan)
 	return nil
 }
 
@@ -144,12 +161,28 @@ func getDirs(path string, dirs *[]string) {
 }
 
 // watcherEventsHandler 处理文件事件
-func watcherEventsHandler(watcher *Watcher) {
+func watcherEventsHandler(watcher *Watcher, rebuildChan chan int, buildChan chan int) {
+	f := debounce(time.Millisecond * 300)
+	spinner := GetSpinner()
 	for {
 		event := <-watcher.events
 		switch event.Type {
+		// TODO: 重新编译输出
 		case syscall.IN_MODIFY:
-			logWatchf("%s Changed!", event.Name)
+			f(func() {
+				rebuildChan <- 1
+				go func() {
+					for {
+						select {
+						case <-buildChan:
+							return
+						default:
+							fmt.Printf("\033[1;32m\r %s Rebuilding... \033[0m", spinner())
+							time.Sleep(time.Millisecond * 100)
+						}
+					}
+				}()
+			})
 		case syscall.IN_CREATE:
 			logWatchf("%s add to watcher successfully.", event.Name)
 		case syscall.IN_DELETE_SELF:
@@ -161,4 +194,32 @@ func watcherEventsHandler(watcher *Watcher) {
 			return
 		}
 	}
+}
+
+// clearTerminal 清屏
+func clearTerminal() {
+	cmd := exec.Command("clear")
+	cmd.Stdout = os.Stdout
+	cmd.Run()
+}
+
+// debounce 防抖
+func debounce(after time.Duration) func(func()) {
+	var timer *time.Timer
+	return func(f func()) {
+		if timer != nil {
+			timer.Stop()
+		}
+		timer = time.AfterFunc(after, f)
+	}
+}
+
+// banner 输出Banner
+func banner() {
+	fmt.Println(" \033[1;32m   ______   \033[1;36m____     \033[1;33m_   __    \033[1;31m______\033[0m")
+	fmt.Println(" \033[1;32m  / ____/  \033[1;36m/ __ \\   \033[1;33m/ | / /   \033[1;31m/ ____/\033[0m")
+	fmt.Println(" \033[1;32m / / __   \033[1;36m/ / / /  \033[1;33m/  |/ /   \033[1;31m/ __/   \033[0m")
+	fmt.Println(" \033[1;32m/ /_/ /  \033[1;36m/ /_/ /  \033[1;33m/ /|  /   \033[1;31m/ /___   \033[0m")
+	fmt.Println(" \033[1;32m\\____/   \033[1;36m\\____/  \033[1;33m/_/ |_/   \033[1;31m/_____/   \033[0m")
+	fmt.Println()
 }

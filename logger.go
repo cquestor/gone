@@ -57,7 +57,6 @@ var (
 	LogWarnf  = warnf
 	LogError  = err
 	LogErrorf = errf
-	logWatch  = watchPrt
 	logWatchf = watchPrtf
 )
 
