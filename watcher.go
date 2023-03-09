@@ -12,11 +12,11 @@ import (
 
 // Watcher 文件监控
 type Watcher struct {
-	fd     int
-	wds    map[string]int
-	events chan *FEvent
-	errs   chan *FEvent
-	lock   sync.Mutex
+	fd        int
+	wds       map[string]int
+	events    chan *FEvent
+	lock      sync.Mutex
+	closeFlag chan int
 }
 
 // FEvent 文件事件
@@ -32,10 +32,11 @@ func NewWatcher() (*Watcher, error) {
 		return nil, err
 	}
 	return &Watcher{
-		fd:     fd,
-		wds:    make(map[string]int),
-		events: make(chan *FEvent),
-		lock:   sync.Mutex{},
+		fd:        fd,
+		wds:       make(map[string]int),
+		events:    make(chan *FEvent),
+		lock:      sync.Mutex{},
+		closeFlag: make(chan int, 1),
 	}, nil
 }
 
@@ -70,48 +71,53 @@ func (watcher *Watcher) RemoveWatch(path string) error {
 func (watcher *Watcher) Watch() {
 	var buf [syscall.SizeofInotifyEvent * 4096]byte
 	for {
-		n, err := syscall.Read(watcher.fd, buf[:])
-		if err != nil {
-			watcher.errs <- &FEvent{Name: "events read error", Type: -1}
-		}
-		if n < syscall.SizeofInotifyEvent {
-			continue
-		}
-		var offset uint32
-		for offset <= uint32(n-syscall.SizeofInotifyEvent) {
-			raw := (*syscall.InotifyEvent)(unsafe.Pointer(&buf[offset]))
-			mask := uint32(raw.Mask)
-			nameLen := uint32(raw.Len)
-			bytes := (*[syscall.PathMax]byte)(unsafe.Pointer(&buf[offset+syscall.SizeofInotifyEvent]))
-			name := strings.TrimRight(string(bytes[0:nameLen]), "\000")
-			// FIXME: 文件路径可能为""
-			name_path := watcher.GetPath(name, int(raw.Wd))
-			// 文件修改
-			if mask&syscall.IN_MODIFY == syscall.IN_MODIFY {
-				watcher.events <- &FEvent{Name: name_path, Type: syscall.IN_MODIFY}
+		select {
+		case <-watcher.closeFlag:
+			return
+		default:
+			n, err := syscall.Read(watcher.fd, buf[:])
+			if err != nil {
+				watcher.events <- &FEvent{Name: "events read error", Type: -1}
 			}
-			// 文件创建
-			if mask&syscall.IN_CREATE == syscall.IN_CREATE {
-				info, err := os.Stat(name_path)
-				if err != nil {
-					watcher.errs <- &FEvent{Name: fmt.Sprintf("watch add (os.Stat) error: %v", err.Error()), Type: -1}
+			if n < syscall.SizeofInotifyEvent {
+				continue
+			}
+			var offset uint32
+			for offset <= uint32(n-syscall.SizeofInotifyEvent) {
+				raw := (*syscall.InotifyEvent)(unsafe.Pointer(&buf[offset]))
+				mask := uint32(raw.Mask)
+				nameLen := uint32(raw.Len)
+				bytes := (*[syscall.PathMax]byte)(unsafe.Pointer(&buf[offset+syscall.SizeofInotifyEvent]))
+				name := strings.TrimRight(string(bytes[0:nameLen]), "\000")
+				// FIXME: 文件路径可能为""
+				name_path := watcher.GetPath(name, int(raw.Wd))
+				// 文件修改
+				if mask&syscall.IN_MODIFY == syscall.IN_MODIFY {
+					watcher.events <- &FEvent{Name: name_path, Type: syscall.IN_MODIFY}
 				}
-				if info.IsDir() {
-					err := watcher.AddWatch(name_path)
+				// 文件创建
+				if mask&syscall.IN_CREATE == syscall.IN_CREATE {
+					info, err := os.Stat(name_path)
 					if err != nil {
-						watcher.errs <- &FEvent{Name: fmt.Sprintf("watch add (AddWatch) error: %v", err.Error()), Type: -1}
+						watcher.events <- &FEvent{Name: fmt.Sprintf("watch add (os.Stat) error: %v", err.Error()), Type: -1}
 					}
-					watcher.events <- &FEvent{Name: name_path, Type: syscall.IN_CREATE}
+					if info.IsDir() {
+						err := watcher.AddWatch(name_path)
+						if err != nil {
+							watcher.events <- &FEvent{Name: fmt.Sprintf("watch add (AddWatch) error: %v", err.Error()), Type: -1}
+						}
+						watcher.events <- &FEvent{Name: name_path, Type: syscall.IN_CREATE}
+					}
 				}
-			}
-			// 目录删除
-			if mask&syscall.IN_DELETE_SELF == syscall.IN_DELETE_SELF {
-				if err := watcher.RemoveWatch(name_path); err != nil {
-					watcher.errs <- &FEvent{Name: "watch remove error", Type: -1}
+				// 目录删除
+				if mask&syscall.IN_DELETE_SELF == syscall.IN_DELETE_SELF {
+					if err := watcher.RemoveWatch(name_path); err != nil {
+						watcher.events <- &FEvent{Name: "watch remove error", Type: -1}
+					}
+					watcher.events <- &FEvent{Name: name_path, Type: syscall.IN_DELETE_SELF}
 				}
-				watcher.events <- &FEvent{Name: name_path, Type: syscall.IN_DELETE_SELF}
+				offset += syscall.SizeofInotifyEvent + nameLen
 			}
-			offset += syscall.SizeofInotifyEvent + nameLen
 		}
 	}
 }
@@ -130,6 +136,9 @@ func (watcher *Watcher) GetPath(name string, wd int) string {
 
 // Close 关闭检测
 func (watcher *Watcher) Close() {
+	watcher.lock.Lock()
+	defer watcher.lock.Unlock()
+	watcher.closeFlag <- 1
 	for _, wd := range watcher.wds {
 		syscall.InotifyRmWatch(watcher.fd, uint32(wd))
 	}

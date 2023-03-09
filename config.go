@@ -20,6 +20,14 @@ type AppConfig struct {
 	Name       string `json:"name"`
 	Port       int    `json:"port"`
 	Production bool   `json:"production"`
+	Watcher    struct {
+		Include []string `json:"include"`
+		Exclude []string `json:"exclude"`
+	} `json:"watcher"`
+	Logger []struct {
+		Name   string `json:"name"`
+		Output bool   `json:"output"`
+	} `json:"logger"`
 }
 
 // newAppConfig 获取带默认参数的项目配置

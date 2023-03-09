@@ -4,6 +4,10 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
+	"strings"
+	"syscall"
+	"time"
 )
 
 // GEngine http.Handler
@@ -62,6 +66,7 @@ func (engine *GEngine) start(addr string) error {
 // Run 项目运行
 func (engine *GEngine) Run() {
 	config, msg := engine.parseConfig()
+	setLogger(config)
 	// 生产环境或编译后的进程，运行项目
 	if config.Production || os.Getenv("GONE_RUNTIME") != "" {
 		LogInfo(msg)
@@ -69,7 +74,91 @@ func (engine *GEngine) Run() {
 			panic(err)
 		}
 	}
+	watcher, err := NewWatcher()
+	if err != nil {
+		LogWarnf("Unable to new file watcher. Your hot build may not work.")
+	} else {
+		dir, err := os.Getwd()
+		if err != nil {
+			LogWarn("Unable to get the project path. Your hot build may not work.")
+		} else {
+			if err := startWatch(dir, watcher); err != nil {
+				LogWarn("Unable to start watcher. Your hot build may not work.")
+			}
+			time.Sleep(10 * time.Minute)
+		}
+	}
 }
 
 // ServeHTTP 实现 http.Handler 接口
 func (engine *GEngine) ServeHTTP(w http.ResponseWriter, r *http.Request) {}
+
+// setLogger 设置日志输出
+func setLogger(config *AppConfig) {
+	for _, logger := range config.Logger {
+		switch strings.ToUpper(logger.Name) {
+		case "INFO":
+			loggerInfo.SetStatus(logger.Output)
+		case "WARN":
+			loggerWarn.SetStatus(logger.Output)
+		case "ERROR":
+			loggerError.SetStatus(logger.Output)
+		case "WATCHER":
+			loggerWatcher.SetStatus(logger.Output)
+		}
+	}
+}
+
+// startWatch 开始文件监测
+func startWatch(basePath string, watcher *Watcher) error {
+	dirs := []string{basePath}
+	getDirs(basePath, &dirs)
+	for _, dir := range dirs {
+		if err := watcher.AddWatch(dir); err != nil {
+			return err
+		}
+		logWatchf("%s add to watcher successfully.", dir)
+	}
+	go watcher.Watch()
+	go watcherEventsHandler(watcher)
+	build()
+	return nil
+}
+
+// 获取目录
+func getDirs(path string, dirs *[]string) {
+	dir, err := os.ReadDir(path)
+	if err != nil {
+		return
+	}
+	// TODO: watcher include and exclude
+	for _, fi := range dir {
+		if fi.IsDir() {
+			if strings.HasPrefix(fi.Name(), ".") {
+				continue
+			}
+			*dirs = append(*dirs, filepath.Join(path, fi.Name()))
+			getDirs(filepath.Join(path, fi.Name()), dirs)
+		}
+	}
+}
+
+// watcherEventsHandler 处理文件事件
+func watcherEventsHandler(watcher *Watcher) {
+	for {
+		event := <-watcher.events
+		switch event.Type {
+		case syscall.IN_MODIFY:
+			logWatchf("%s Changed!", event.Name)
+		case syscall.IN_CREATE:
+			logWatchf("%s add to watcher successfully.", event.Name)
+		case syscall.IN_DELETE_SELF:
+			logWatchf("%s removed from watcher.", event.Name)
+		case -1:
+			LogWarnf("Watcher err: %s", event.Name)
+			watcher.Close()
+			LogWarn("Your hot build has closed!")
+			return
+		}
+	}
+}
