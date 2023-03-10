@@ -3,6 +3,8 @@ package gone
 import (
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 )
@@ -23,27 +25,51 @@ const DEFAULT_INOTIFY_MASK uint32 = syscall.IN_MODIFY | syscall.IN_CREATE | sysc
 //
 // 跨平台的解决方案似乎应该使用 golang.org/x/sys
 type Watcher struct {
-	fd   int
-	wds  map[string]int
-	lock sync.Mutex
+	fd       int
+	basePath string
+	wds      map[string]int
+	includes map[string]int
+	excludes map[string]int
+	lock     sync.Mutex
 }
 
 // NewWather 创建Watcher
-func NewWatcher() (*Watcher, error) {
+//
+// 默认监听 basePath 及其下所有目录，忽略隐藏文件。可通过 includes 和 excludes 来强制添加和排除监听
+func NewWatcher(basePath string, includes []string, excludes []string) (*Watcher, error) {
 	fd, err := syscall.InotifyInit()
 	if err != nil {
 		return nil, err
 	}
-	return &Watcher{
-		fd:   fd,
-		wds:  make(map[string]int),
-		lock: sync.Mutex{},
-	}, nil
+	watcher := &Watcher{
+		fd:       fd,
+		basePath: basePath,
+		wds:      make(map[string]int),
+		includes: make(map[string]int),
+		excludes: make(map[string]int),
+		lock:     sync.Mutex{},
+	}
+	if err := watcher.checkDirpath(watcher.basePath); err != nil {
+		return nil, err
+	}
+	// 添加附加文件
+	for i, v := range includes {
+		watcher.includes[filepath.Join(basePath, v)] = i
+	}
+	// 添加排除文件
+	for i, v := range excludes {
+		watcher.excludes[filepath.Join(basePath, v)] = i
+	}
+	return watcher, nil
 }
 
 // Start 开始监听
-func (watcher *Watcher) Start(basePath string) {
-
+func (watcher *Watcher) Start() error {
+	dirs := []string{watcher.basePath}
+	watcher.walkDir(watcher.basePath, &dirs)
+	// TODO: 开始事件监听
+	fmt.Println(dirs)
+	return nil
 }
 
 // AddWatch 将目录添加进监听
@@ -109,4 +135,26 @@ func (watcher *Watcher) checkDirpath(dirpath string) error {
 		return fmt.Errorf("%s: only directory can be added in watcher, not file", dirpath)
 	}
 	return nil
+}
+
+// walkDir 遍历目录及子目录
+func (watcher *Watcher) walkDir(dirpath string, results *[]string) {
+	dirs, _ := os.ReadDir(dirpath)
+	for _, dir := range dirs {
+		if dir.IsDir() {
+			full_path := filepath.Join(dirpath, dir.Name())
+			// 隐藏目录，判断是否被包含
+			if strings.HasPrefix(dir.Name(), ".") {
+				if _, ok := watcher.includes[full_path]; !ok {
+					continue
+				}
+			}
+			// 被排除目录
+			if _, ok := watcher.excludes[full_path]; ok {
+				continue
+			}
+			*results = append(*results, full_path)
+			watcher.walkDir(full_path, results)
+		}
+	}
 }
