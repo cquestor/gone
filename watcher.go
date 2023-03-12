@@ -204,6 +204,7 @@ func (watcher *Watcher) handleLoop(sigChan chan int) {
 			if event.Type == syscall.IN_MODIFY {
 				if watcher.checkValid(event.Msg) {
 					debounce(func() {
+						logWatchf("%s: changed!", event.Msg)
 						sigChan <- 1
 					})
 				}
@@ -211,6 +212,7 @@ func (watcher *Watcher) handleLoop(sigChan chan int) {
 			// 处理目录创建
 			if event.Type == syscall.IN_CREATE {
 				if watcher.checkValid(event.Msg) {
+					logWatchf("%s: will add to watch", event.Msg)
 					if err := watcher.AddWatch(event.Msg); err != nil {
 						watcher.events <- &WEvent{Type: -1, Msg: fmt.Sprintf("add watch error: %v", err)}
 					}
@@ -218,12 +220,13 @@ func (watcher *Watcher) handleLoop(sigChan chan int) {
 			}
 			// 处理目录删除
 			if event.Type == syscall.IN_DELETE_SELF {
+				logWatchf("%s: will delete from watch", event.Msg)
 				watcher.DeleteWatch(event.Msg)
 			}
 			// 处理监听错误
 			if event.Type == -1 {
-				// TODO: 监听出错，通知用户并退出监听
-				fmt.Println(event.Msg)
+				logWatch("watch error occurs, your hot rebuild will be deactivated")
+				watcher.Close()
 			}
 		}
 	}
