@@ -1,6 +1,9 @@
 package gone
 
-import "fmt"
+import (
+	"encoding/json"
+	"fmt"
+)
 
 // IResponse 响应接口
 type IResponse interface {
@@ -64,13 +67,31 @@ func Data(code int, data []byte) *responseData {
 }
 
 // Invoke 执行字符串响应
-func (response *responseString) Invoke(ctx *Context) {}
+func (response *responseString) Invoke(ctx *Context) {
+	ctx.SetHeader("Content-Type", "text/plain; charset=utf-8")
+	ctx.setStatusCode(response.StatusCode)
+	ctx.Write([]byte(response.Data))
+}
 
 // Invoke 执行网页响应
-func (response *responseHtml) Invoke(ctx *Context) {}
+func (response *responseHtml) Invoke(ctx *Context) {
+	ctx.SetHeader("Content-Type", "text/html; charset=utf-8")
+	ctx.setStatusCode(response.StatusCode)
+	ctx.Write(response.Data)
+}
 
 // Invoke 执行 json 响应
-func (response *responseJson) Invoke(ctx *Context) {}
+func (response *responseJson) Invoke(ctx *Context) {
+	ctx.SetHeader("Content-Type", "application/json; charset=utf-8")
+	ctx.setStatusCode(response.StatusCode)
+	encoder := json.NewEncoder(ctx.Resp)
+	if err := encoder.Encode(response.Data); err != nil {
+		panic(err)
+	}
+}
 
 // Invoke 执行二进制响应
-func (response *responseData) Invoke(ctx *Context) {}
+func (response *responseData) Invoke(ctx *Context) {
+	ctx.setStatusCode(response.StatusCode)
+	ctx.Write(response.Data)
+}
