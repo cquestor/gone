@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"testing"
 
+	_ "embed"
+
 	"github.com/cquestor/gone"
 )
 
@@ -27,4 +29,14 @@ func TestLog(t *testing.T) {
 	gone.LogWarnf("警告%s输出\n", "格式化")
 	gone.LogErr("错误输出")
 	gone.LogErrf("错误%s输出\n", "格式化")
+	spinner := gone.Spinner()
+	fmt.Println(spinner())
+}
+
+//go:embed application.json
+var content []byte
+
+func TestRun(t *testing.T) {
+	g := gone.New()
+	g.Run(gone.GONE_CONFIG_CONTENT(content))
 }

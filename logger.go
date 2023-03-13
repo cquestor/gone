@@ -26,7 +26,7 @@ func NewGLogger(name string, output io.Writer, prefix string, color int) *GLogge
 		prefix: prefix,
 		lock:   sync.Mutex{},
 	}
-	gloggers = append(gloggers, logger)
+	gloggers[name] = logger
 	return logger
 }
 
@@ -43,21 +43,21 @@ var (
 	warnLogger  = NewGLogger("warning", os.Stdout, "[WARNING]", LogYellow)
 	errLogger   = NewGLogger("error", os.Stdout, "[ERROR]", LogRed)
 	watchLogger = NewGLogger("watch", io.Discard, "[WATCH]", LogPurple)
-	gloggers    = make([]*GLogger, 0)
+	gloggers    = make(map[string]*GLogger)
 )
 
 // Printf 格式化输出
 func (logger *GLogger) Printf(format string, v ...any) {
 	value := fmt.Sprintf(format, v...)
 	value = fmt.Sprintf("\033[1;%dm%s %s %s\033[0m", logger.color, logger.prefix, time.Now().Format("2006-01-02 15:04:05"), value)
-	fmt.Print(value)
+	logger.writer.Write([]byte(value))
 }
 
 // Println 按行输出
 func (logger *GLogger) Println(v ...any) {
 	value := fmt.Sprint(v...)
-	value = fmt.Sprintf("\033[1;%dm%s %s %s\033[0m", logger.color, logger.prefix, time.Now().Format("2006-01-02 15:04:05"), value)
-	fmt.Println(value)
+	value = fmt.Sprintf("\033[1;%dm%s %s %s\033[0m\n", logger.color, logger.prefix, time.Now().Format("2006-01-02 15:04:05"), value)
+	logger.writer.Write([]byte(value))
 }
 
 // SetStatus 设置输出状态
@@ -81,3 +81,15 @@ var (
 	logWatch  = watchLogger.Println
 	logWatchf = watchLogger.Printf
 )
+
+// 加载动画
+var spinners = []string{"⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"}
+
+// Spinner 获取加载图标
+func Spinner() func() string {
+	var index int = 0
+	return func() string {
+		index = (index + 1) % len(spinners)
+		return spinners[index]
+	}
+}
